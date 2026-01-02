@@ -71,51 +71,75 @@ function cleanupChromiumLockFiles(sessionProfileDir: string) {
   lockFiles.forEach((lockFile) => {
     const lockFilePath = path.join(sessionProfileDir, lockFile)
     try {
+      // Try to remove even if it doesn't exist (handles race conditions)
       if (fs.existsSync(lockFilePath)) {
-        fs.unlinkSync(lockFilePath)
-        console.log(`[WPPCONNECT] Removed stale lock file: ${lockFile}`)
-        removedCount++
-      } else {
-        console.log(`[WPPCONNECT] Lock file not found (OK): ${lockFile}`)
+        // Force remove with retry
+        try {
+          fs.unlinkSync(lockFilePath)
+          console.log(`[WPPCONNECT] Removed stale lock file: ${lockFile}`)
+          removedCount++
+        } catch (unlinkError: any) {
+          // If unlink fails, try chmod then unlink (in case of permission issues)
+          try {
+            fs.chmodSync(lockFilePath, 0o666)
+            fs.unlinkSync(lockFilePath)
+            console.log(`[WPPCONNECT] Force removed lock file: ${lockFile}`)
+            removedCount++
+          } catch (forceError: any) {
+            console.warn(`[WPPCONNECT] Could not remove lock file ${lockFile}:`, forceError.message)
+          }
+        }
       }
     } catch (error: any) {
-      console.warn(`[WPPCONNECT] Failed to remove lock file ${lockFile}:`, error.message)
+      console.warn(`[WPPCONNECT] Error checking lock file ${lockFile}:`, error.message)
     }
   })
   
-  console.log(`[WPPCONNECT] Cleanup complete: removed ${removedCount} of ${lockFiles.length} lock files`)
+  if (removedCount > 0) {
+    console.log(`[WPPCONNECT] Cleanup complete: removed ${removedCount} of ${lockFiles.length} lock files`)
+  }
 }
 
 // Start WPPConnect client
 async function startWhatsAppClient() {
-  try {
-    console.log('[WPPCONNECT] Starting WhatsApp client...')
-    
-    // WPPConnect session storage location:
-    // Session tokens are stored in: ./wpp-session/wingshack-session/
-    // This folder contains the WhatsApp authentication tokens and browser session data
-    // Ensure wpp-session directory exists
-    const sessionDir = path.join(process.cwd(), 'wpp-session')
-    if (!fs.existsSync(sessionDir)) {
-      fs.mkdirSync(sessionDir, { recursive: true })
-      console.log(`[WPPCONNECT] Created session directory: ${sessionDir}`)
-    }
+  const maxRetries = 3
+  let lastError: any = null
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`[WPPCONNECT] Starting WhatsApp client... (attempt ${attempt}/${maxRetries})`)
+      
+      // WPPConnect session storage location:
+      // Session tokens are stored in: ./wpp-session/wingshack-session/
+      // This folder contains the WhatsApp authentication tokens and browser session data
+      // Ensure wpp-session directory exists
+      const sessionDir = path.join(process.cwd(), 'wpp-session')
+      if (!fs.existsSync(sessionDir)) {
+        fs.mkdirSync(sessionDir, { recursive: true })
+        console.log(`[WPPCONNECT] Created session directory: ${sessionDir}`)
+      }
 
-    // Session profile directory path: /app/wpp-session/wingshack-session (on Railway)
-    const sessionProfileDir = path.join(sessionDir, 'wingshack-session')
-    
-    // Ensure session profile directory exists
-    if (!fs.existsSync(sessionProfileDir)) {
-      fs.mkdirSync(sessionProfileDir, { recursive: true })
-      console.log(`[WPPCONNECT] Created session profile directory: ${sessionProfileDir}`)
-    }
-    
-    // Always clean up stale Chromium lock files before starting
-    // This is critical on Railway where containers restart and lock files persist
-    console.log(`[WPPCONNECT] Cleaning up Chromium lock files in: ${sessionProfileDir}`)
-    cleanupChromiumLockFiles(sessionProfileDir)
-    
-    client = await create({
+      // Session profile directory path: /app/wpp-session/wingshack-session (on Railway)
+      const sessionProfileDir = path.join(sessionDir, 'wingshack-session')
+      
+      // Ensure session profile directory exists
+      if (!fs.existsSync(sessionProfileDir)) {
+        fs.mkdirSync(sessionProfileDir, { recursive: true })
+        console.log(`[WPPCONNECT] Created session profile directory: ${sessionProfileDir}`)
+      }
+      
+      // Always clean up stale Chromium lock files immediately before starting
+      // This is critical on Railway where containers restart and lock files persist
+      console.log(`[WPPCONNECT] Cleaning up Chromium lock files in: ${sessionProfileDir}`)
+      cleanupChromiumLockFiles(sessionProfileDir)
+      
+      // Small delay to ensure filesystem operations complete before Chromium starts
+      await new Promise(resolve => setTimeout(resolve, 200))
+      
+      // Clean up again right before create() to catch any files created between cleanup and launch
+      cleanupChromiumLockFiles(sessionProfileDir)
+      
+      client = await create({
       session: 'wingshack-session',
       folderNameToken: 'wpp-session',
       catchQR: (base64Qr: string) => {
@@ -137,14 +161,23 @@ async function startWhatsAppClient() {
           '--disable-dev-shm-usage',
           '--disable-gpu',
           '--no-zygote',
+          '--disable-background-networking',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
+          '--disable-features=TranslateUI',
+          '--disable-ipc-flooding-protection',
+          '--disable-session-crashed-bubble',
+          '--disable-infobars',
+          '--disable-breakpad',
         ],
       },
-    })
+      })
 
-    console.log('[WPPCONNECT] WhatsApp client started successfully')
-    console.log(`[WPPCONNECT] Session tokens persisted to: ${sessionDir}`)
+      console.log('[WPPCONNECT] WhatsApp client started successfully')
+      console.log(`[WPPCONNECT] Session tokens persisted to: ${sessionProfileDir}`)
 
-    // Set up inbound message handler
+      // Set up inbound message handler
     client.onMessage(async (message: any) => {
       try {
         // Ignore group messages (groups have @g.us suffix)
@@ -198,11 +231,45 @@ async function startWhatsAppClient() {
       }
     })
 
-    console.log('[INBOUND] Message handler registered')
-  } catch (error: any) {
-    console.error('Error starting WhatsApp client:', error.message)
-    process.exit(1)
+      console.log('[INBOUND] Message handler registered')
+      return // Success, exit retry loop
+      
+    } catch (error: any) {
+      lastError = error
+      const errorMessage = error.message || String(error)
+      
+      // Check if it's a singleton lock error
+      if (errorMessage.includes('profile appears to be in use') || errorMessage.includes('Code: 21')) {
+        console.warn(`[WPPCONNECT] Attempt ${attempt} failed with singleton lock error, retrying...`)
+        
+        // Clean up again before retry
+        const sessionProfileDir = path.join(path.join(process.cwd(), 'wpp-session'), 'wingshack-session')
+        cleanupChromiumLockFiles(sessionProfileDir)
+        
+        // Wait longer before retry (exponential backoff)
+        if (attempt < maxRetries) {
+          const delay = 500 * attempt
+          console.log(`[WPPCONNECT] Waiting ${delay}ms before retry...`)
+          await new Promise(resolve => setTimeout(resolve, delay))
+          continue
+        }
+      }
+      
+      // If not a singleton error or max retries reached, throw
+      console.error(`[WPPCONNECT] Attempt ${attempt} failed:`, errorMessage)
+      if (attempt === maxRetries) {
+        throw error
+      }
+    }
   }
+  
+  // If we get here, all retries failed
+  if (lastError) {
+    console.error('[WPPCONNECT] Error starting WhatsApp client after all retries:', lastError.message)
+    throw lastError
+  }
+  
+  throw new Error('Failed to start WhatsApp client')
 }
 
 // Process outbound message job
