@@ -57,6 +57,29 @@ function e164ToWhatsAppId(e164Phone: string): string {
 let client: Whatsapp | null = null
 let isProcessingJob = false
 
+// Clean up stale Chromium lock files from session profile directory
+// This prevents "profile appears to be in use" errors on Railway
+function cleanupChromiumLockFiles(sessionProfileDir: string) {
+  const lockFiles = [
+    'SingletonLock',
+    'SingletonCookie',
+    'SingletonSocket',
+    'Lockfile',
+  ]
+
+  lockFiles.forEach((lockFile) => {
+    const lockFilePath = path.join(sessionProfileDir, lockFile)
+    try {
+      if (fs.existsSync(lockFilePath)) {
+        fs.unlinkSync(lockFilePath)
+        console.log(`[WPPCONNECT] Removed stale lock file: ${lockFile}`)
+      }
+    } catch (error: any) {
+      console.warn(`[WPPCONNECT] Failed to remove lock file ${lockFile}:`, error.message)
+    }
+  })
+}
+
 // Start WPPConnect client
 async function startWhatsAppClient() {
   try {
@@ -70,6 +93,14 @@ async function startWhatsAppClient() {
     if (!fs.existsSync(sessionDir)) {
       fs.mkdirSync(sessionDir, { recursive: true })
       console.log(`[WPPCONNECT] Created session directory: ${sessionDir}`)
+    }
+
+    // Session profile directory path: /app/wpp-session/wingshack-session (on Railway)
+    const sessionProfileDir = path.join(sessionDir, 'wingshack-session')
+    
+    // Clean up stale Chromium lock files before starting
+    if (fs.existsSync(sessionProfileDir)) {
+      cleanupChromiumLockFiles(sessionProfileDir)
     }
     
     client = await create({
@@ -93,6 +124,7 @@ async function startWhatsAppClient() {
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
+          '--no-zygote',
         ],
       },
     })
