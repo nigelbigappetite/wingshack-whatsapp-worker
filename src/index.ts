@@ -158,24 +158,31 @@ async function startWhatsAppClient() {
           console.log('\n=== QR CODE ===')
           console.log('Scan this QR code with WhatsApp:')
           
+          // Extract base64 data (remove data:image/png;base64, prefix if present)
+          const base64Data = base64Qr.replace(/^data:image\/png;base64,/, '')
+          
           // Save QR code as PNG file for easy access
           try {
-            // Extract base64 data (remove data:image/png;base64, prefix if present)
-            const base64Data = base64Qr.replace(/^data:image\/png;base64,/, '')
             const qrCodePath = path.join(process.cwd(), 'wpp-session', 'qr-code.png')
             const qrCodeBuffer = Buffer.from(base64Data, 'base64')
             fs.writeFileSync(qrCodePath, qrCodeBuffer)
-            console.log(`QR code saved to: ${qrCodePath}`)
-            console.log('To access the QR code:')
-            console.log('1. Download the file from Railway (if you have file access)')
-            console.log('2. Or copy the base64 data below and decode it at https://base64.guru/converter/decode/image')
-            console.log('3. Or use: echo "' + base64Data.substring(0, 100) + '..." | base64 -d > qr-code.png')
+            console.log(`✓ QR code saved to: ${qrCodePath}`)
           } catch (saveError: any) {
             console.warn('Failed to save QR code file:', saveError.message)
-            console.log('Base64 QR code data:')
-            console.log(base64Qr)
           }
           
+          // Log base64 data in a clean format for easy copying
+          console.log('\n--- Base64 QR Code Data (copy everything below this line) ---')
+          console.log(base64Data)
+          console.log('--- End of Base64 Data ---\n')
+          
+          console.log('To decode the QR code:')
+          console.log('1. Copy the base64 data above (between the lines)')
+          console.log('2. Go to: https://base64.guru/converter/decode/image')
+          console.log('3. Paste the base64 data and download the PNG')
+          console.log('4. Or use this command locally:')
+          console.log(`   echo "${base64Data.substring(0, 50)}..." | base64 -d > qr-code.png`)
+          console.log('5. Or download from Railway: railway run cat wpp-session/qr-code.png > qr-code.png')
           console.log('===============\n')
         },
         statusFind: (statusSession: string) => {
