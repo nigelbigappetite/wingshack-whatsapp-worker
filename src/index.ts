@@ -59,6 +59,7 @@ let isProcessingJob = false
 
 // Clean up stale Chromium lock files from session profile directory
 // This prevents "profile appears to be in use" errors on Railway
+// The SingletonLock file contains hostname info from previous containers, causing false positives
 function cleanupChromiumLockFiles(sessionProfileDir: string) {
   const lockFiles = [
     'SingletonLock',
@@ -68,13 +69,15 @@ function cleanupChromiumLockFiles(sessionProfileDir: string) {
   ]
 
   let removedCount = 0
+  
+  // First, try to remove known lock files
   lockFiles.forEach((lockFile) => {
     const lockFilePath = path.join(sessionProfileDir, lockFile)
     try {
-      // Try to remove even if it doesn't exist (handles race conditions)
       if (fs.existsSync(lockFilePath)) {
-        // Force remove with retry
+        // Force remove with multiple strategies
         try {
+          // Try normal unlink first
           fs.unlinkSync(lockFilePath)
           console.log(`[WPPCONNECT] Removed stale lock file: ${lockFile}`)
           removedCount++
@@ -95,8 +98,34 @@ function cleanupChromiumLockFiles(sessionProfileDir: string) {
     }
   })
   
+  // Also check for any files matching lock patterns (in case of variations)
+  try {
+    if (fs.existsSync(sessionProfileDir)) {
+      const files = fs.readdirSync(sessionProfileDir)
+      files.forEach((file) => {
+        // Remove any files that look like lock files
+        if (file.startsWith('Singleton') || file === 'Lockfile' || file.startsWith('lock')) {
+          const lockFilePath = path.join(sessionProfileDir, file)
+          try {
+            if (fs.existsSync(lockFilePath)) {
+              fs.unlinkSync(lockFilePath)
+              console.log(`[WPPCONNECT] Removed additional lock file: ${file}`)
+              removedCount++
+            }
+          } catch (error: any) {
+            // Ignore errors for additional files
+          }
+        }
+      })
+    }
+  } catch (error: any) {
+    // Ignore errors when scanning directory
+  }
+  
   if (removedCount > 0) {
-    console.log(`[WPPCONNECT] Cleanup complete: removed ${removedCount} of ${lockFiles.length} lock files`)
+    console.log(`[WPPCONNECT] Cleanup complete: removed ${removedCount} lock files`)
+  } else {
+    console.log(`[WPPCONNECT] No lock files found to clean`)
   }
 }
 
@@ -129,15 +158,20 @@ async function startWhatsAppClient() {
       if (fs.existsSync(sessionProfileDir)) {
         console.log(`[WPPCONNECT] Session directory exists, cleaning only Chromium lock files`)
         console.log(`[WPPCONNECT] Preserving session tokens in: ${sessionProfileDir}`)
+        
+        // Aggressive cleanup: remove lock files multiple times to catch any that get recreated
         cleanupChromiumLockFiles(sessionProfileDir)
+        await new Promise(resolve => setTimeout(resolve, 200))
+        cleanupChromiumLockFiles(sessionProfileDir) // Clean again after short delay
       } else {
         // Directory doesn't exist, create it
         fs.mkdirSync(sessionProfileDir, { recursive: true })
         console.log(`[WPPCONNECT] Created browser profile directory: ${sessionProfileDir}`)
       }
       
-      // Small delay to ensure filesystem operations complete before Chromium starts
-      await new Promise(resolve => setTimeout(resolve, 300))
+      // Longer delay to ensure filesystem operations complete and locks are fully cleared
+      // This is critical on Railway where container hostnames change between restarts
+      await new Promise(resolve => setTimeout(resolve, 800))
       
       client = await create({
         session: 'wingshack-session',
@@ -267,13 +301,18 @@ async function startWhatsAppClient() {
       if (errorMessage.includes('profile appears to be in use') || errorMessage.includes('Code: 21')) {
         console.warn(`[WPPCONNECT] Attempt ${attempt} failed with singleton lock error, retrying...`)
         
-        // Clean up again before retry
+        // Aggressively clean up lock files multiple times before retry
         const sessionProfileDir = path.join(path.join(process.cwd(), 'wpp-session'), 'wingshack-session')
+        console.log(`[WPPCONNECT] Performing aggressive lock file cleanup before retry...`)
+        cleanupChromiumLockFiles(sessionProfileDir)
+        await new Promise(resolve => setTimeout(resolve, 300))
+        cleanupChromiumLockFiles(sessionProfileDir)
+        await new Promise(resolve => setTimeout(resolve, 300))
         cleanupChromiumLockFiles(sessionProfileDir)
         
-        // Wait longer before retry (exponential backoff)
+        // Wait longer before retry (exponential backoff with minimum 1 second)
         if (attempt < maxRetries) {
-          const delay = 500 * attempt
+          const delay = Math.max(1000, 500 * attempt)
           console.log(`[WPPCONNECT] Waiting ${delay}ms before retry...`)
           await new Promise(resolve => setTimeout(resolve, delay))
           continue
