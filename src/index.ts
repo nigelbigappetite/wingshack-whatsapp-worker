@@ -160,54 +160,106 @@ async function startWhatsAppClient() {
       
       // WPPConnect stores session tokens in the session directory
       // We must preserve these tokens to avoid re-authentication on every restart
-      // IMPORTANT: Only clean Chromium lock files and browser profile data, NEVER delete session tokens
+      // AGGRESSIVE APPROACH: Remove ALL browser profile files/directories, preserve ONLY session tokens
       if (fs.existsSync(sessionProfileDir)) {
-        console.log(`[WPPCONNECT] Session directory exists, cleaning browser profile while preserving tokens`)
+        console.log(`[WPPCONNECT] Session directory exists, performing aggressive cleanup while preserving tokens`)
         console.log(`[WPPCONNECT] Preserving session tokens in: ${sessionProfileDir}`)
         
-        // First, clean known lock files
-        cleanupChromiumLockFiles(sessionProfileDir)
+        // WPPConnect session token patterns (these MUST be preserved)
+        const sessionTokenPatterns = ['.data', '.wppconnect', 'wppconnect.json', '.wppconnect.json']
+        const tempBackupDir = path.join(sessionDir, 'temp-tokens-backup')
         
-        // WPPConnect stores session tokens in .data subdirectory or as .wppconnect files
-        // Remove browser profile directories/files EXCEPT known session token patterns
         try {
+          // Step 1: Backup session tokens to a temporary location
+          if (fs.existsSync(tempBackupDir)) {
+            fs.rmSync(tempBackupDir, { recursive: true, force: true })
+          }
+          fs.mkdirSync(tempBackupDir, { recursive: true })
+          
           const files = fs.readdirSync(sessionProfileDir)
-          const sessionTokenPatterns = ['.data', '.wppconnect', 'wppconnect.json']
-          const browserProfileDirs = ['Default', 'Profile', 'System Profile', 'Crash Reports', 'Crashpad']
+          let backedUpCount = 0
           
           files.forEach((file) => {
             const filePath = path.join(sessionProfileDir, file)
             const isSessionToken = sessionTokenPatterns.some(pattern => 
               file.includes(pattern) || file.startsWith('.wppconnect')
             )
-            const isBrowserProfile = browserProfileDirs.includes(file) || 
-                                     file.startsWith('Singleton') || 
-                                     file === 'Lockfile' ||
-                                     file.startsWith('lock')
             
-            if (isBrowserProfile && !isSessionToken) {
+            if (isSessionToken) {
               try {
+                const backupPath = path.join(tempBackupDir, file)
                 const stat = fs.statSync(filePath)
                 if (stat.isDirectory()) {
-                  // Remove entire browser profile directory
-                  fs.rmSync(filePath, { recursive: true, force: true })
-                  console.log(`[WPPCONNECT] Removed browser profile directory: ${file}`)
+                  fs.cpSync(filePath, backupPath, { recursive: true })
                 } else {
-                  // Remove browser profile file (lock files, etc.)
-                  fs.unlinkSync(filePath)
-                  console.log(`[WPPCONNECT] Removed browser profile file: ${file}`)
+                  fs.copyFileSync(filePath, backupPath)
                 }
-              } catch (error: any) {
-                // Ignore errors for individual files
+                backedUpCount++
+                console.log(`[WPPCONNECT] Backed up session token: ${file}`)
+              } catch (backupError: any) {
+                console.warn(`[WPPCONNECT] Failed to backup ${file}:`, backupError.message)
               }
-            } else if (isSessionToken) {
-              console.log(`[WPPCONNECT] Preserving session token: ${file}`)
             }
           })
+          
+          if (backedUpCount > 0) {
+            console.log(`[WPPCONNECT] Backed up ${backedUpCount} session token files`)
+          }
+          
+          // Step 2: COMPLETELY remove the profile directory (this removes ALL browser files including any locks)
+          console.log(`[WPPCONNECT] Removing entire profile directory to clear all locks...`)
+          fs.rmSync(sessionProfileDir, { recursive: true, force: true })
+          console.log(`[WPPCONNECT] Profile directory removed`)
+          
+          // Step 3: Recreate the profile directory
+          fs.mkdirSync(sessionProfileDir, { recursive: true })
+          console.log(`[WPPCONNECT] Recreated clean profile directory`)
+          
+          // Step 4: Restore session tokens
+          if (fs.existsSync(tempBackupDir)) {
+            const backupFiles = fs.readdirSync(tempBackupDir)
+            backupFiles.forEach((file) => {
+              try {
+                const backupPath = path.join(tempBackupDir, file)
+                const restorePath = path.join(sessionProfileDir, file)
+                const stat = fs.statSync(backupPath)
+                if (stat.isDirectory()) {
+                  fs.cpSync(backupPath, restorePath, { recursive: true })
+                } else {
+                  fs.copyFileSync(backupPath, restorePath)
+                }
+                console.log(`[WPPCONNECT] Restored session token: ${file}`)
+              } catch (restoreError: any) {
+                console.warn(`[WPPCONNECT] Failed to restore ${file}:`, restoreError.message)
+              }
+            })
+            
+            // Clean up backup directory
+            fs.rmSync(tempBackupDir, { recursive: true, force: true })
+            console.log(`[WPPCONNECT] Restored ${backupFiles.length} session token files`)
+          }
         } catch (error: any) {
-          console.warn(`[WPPCONNECT] Error cleaning profile directory:`, error.message)
-          // Fallback to lock file cleanup only
-          cleanupChromiumLockFiles(sessionProfileDir)
+          console.warn(`[WPPCONNECT] Error during aggressive cleanup:`, error.message)
+          // If backup/restore fails, try to restore from backup if it exists
+          if (fs.existsSync(tempBackupDir) && !fs.existsSync(sessionProfileDir)) {
+            try {
+              fs.mkdirSync(sessionProfileDir, { recursive: true })
+              const backupFiles = fs.readdirSync(tempBackupDir)
+              backupFiles.forEach((file) => {
+                const backupPath = path.join(tempBackupDir, file)
+                const restorePath = path.join(sessionProfileDir, file)
+                const stat = fs.statSync(backupPath)
+                if (stat.isDirectory()) {
+                  fs.cpSync(backupPath, restorePath, { recursive: true })
+                } else {
+                  fs.copyFileSync(backupPath, restorePath)
+                }
+              })
+              console.log(`[WPPCONNECT] Recovered session tokens from backup`)
+            } catch (recoverError: any) {
+              console.error(`[WPPCONNECT] Failed to recover session tokens:`, recoverError.message)
+            }
+          }
         }
       } else {
         // Directory doesn't exist, create it
@@ -215,12 +267,9 @@ async function startWhatsAppClient() {
         console.log(`[WPPCONNECT] Created browser profile directory: ${sessionProfileDir}`)
       }
       
-      // Clean lock files one more time right before starting (in case they were recreated)
-      cleanupChromiumLockFiles(sessionProfileDir)
-      
       // Longer delay to ensure filesystem operations complete and locks are fully cleared
       // This is critical on Railway where container hostnames change between restarts
-      await new Promise(resolve => setTimeout(resolve, 1000))
+      await new Promise(resolve => setTimeout(resolve, 2000))
       
       client = await create({
         session: 'wingshack-session',
