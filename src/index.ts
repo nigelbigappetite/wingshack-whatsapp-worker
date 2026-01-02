@@ -122,22 +122,34 @@ async function startWhatsAppClient() {
       // Session profile directory path: /app/wpp-session/wingshack-session (on Railway)
       const sessionProfileDir = path.join(sessionDir, 'wingshack-session')
       
-      // Ensure session profile directory exists
-      if (!fs.existsSync(sessionProfileDir)) {
-        fs.mkdirSync(sessionProfileDir, { recursive: true })
-        console.log(`[WPPCONNECT] Created session profile directory: ${sessionProfileDir}`)
+      // On Railway, completely remove and recreate the browser profile directory
+      // This ensures no stale lock files from previous container instances
+      // WPPConnect stores WhatsApp auth tokens separately, so this is safe
+      if (fs.existsSync(sessionProfileDir)) {
+        console.log(`[WPPCONNECT] Removing existing browser profile directory to clear stale locks: ${sessionProfileDir}`)
+        try {
+          // Remove the entire directory recursively
+          fs.rmSync(sessionProfileDir, { recursive: true, force: true })
+          console.log(`[WPPCONNECT] Successfully removed browser profile directory`)
+        } catch (rmError: any) {
+          console.warn(`[WPPCONNECT] Failed to remove profile directory, trying cleanup instead:`, rmError.message)
+          // Fallback to cleanup if removal fails
+          cleanupChromiumLockFiles(sessionProfileDir)
+        }
       }
       
-      // Always clean up stale Chromium lock files immediately before starting
-      // This is critical on Railway where containers restart and lock files persist
-      console.log(`[WPPCONNECT] Cleaning up Chromium lock files in: ${sessionProfileDir}`)
-      cleanupChromiumLockFiles(sessionProfileDir)
+      // Always recreate the directory to ensure it's clean
+      if (!fs.existsSync(sessionProfileDir)) {
+        fs.mkdirSync(sessionProfileDir, { recursive: true })
+        console.log(`[WPPCONNECT] Created clean browser profile directory: ${sessionProfileDir}`)
+      } else {
+        // If directory still exists (removal failed), do aggressive cleanup
+        console.log(`[WPPCONNECT] Performing aggressive cleanup of existing profile directory`)
+        cleanupChromiumLockFiles(sessionProfileDir)
+      }
       
       // Small delay to ensure filesystem operations complete before Chromium starts
-      await new Promise(resolve => setTimeout(resolve, 200))
-      
-      // Clean up again right before create() to catch any files created between cleanup and launch
-      cleanupChromiumLockFiles(sessionProfileDir)
+      await new Promise(resolve => setTimeout(resolve, 300))
       
       client = await create({
         session: 'wingshack-session',
