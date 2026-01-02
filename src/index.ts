@@ -153,25 +153,67 @@ async function startWhatsAppClient() {
       
       // WPPConnect stores session tokens in the session directory
       // We must preserve these tokens to avoid re-authentication on every restart
-      // IMPORTANT: Only clean Chromium lock files, NEVER delete the entire directory
-      // Deleting the directory would remove session tokens and force re-authentication
+      // IMPORTANT: Only clean Chromium lock files and browser profile data, NEVER delete session tokens
       if (fs.existsSync(sessionProfileDir)) {
-        console.log(`[WPPCONNECT] Session directory exists, cleaning only Chromium lock files`)
+        console.log(`[WPPCONNECT] Session directory exists, cleaning browser profile while preserving tokens`)
         console.log(`[WPPCONNECT] Preserving session tokens in: ${sessionProfileDir}`)
         
-        // Aggressive cleanup: remove lock files multiple times to catch any that get recreated
+        // First, clean known lock files
         cleanupChromiumLockFiles(sessionProfileDir)
-        await new Promise(resolve => setTimeout(resolve, 200))
-        cleanupChromiumLockFiles(sessionProfileDir) // Clean again after short delay
+        
+        // WPPConnect stores session tokens in .data subdirectory or as .wppconnect files
+        // Remove browser profile directories/files EXCEPT known session token patterns
+        try {
+          const files = fs.readdirSync(sessionProfileDir)
+          const sessionTokenPatterns = ['.data', '.wppconnect', 'wppconnect.json']
+          const browserProfileDirs = ['Default', 'Profile', 'System Profile', 'Crash Reports', 'Crashpad']
+          
+          files.forEach((file) => {
+            const filePath = path.join(sessionProfileDir, file)
+            const isSessionToken = sessionTokenPatterns.some(pattern => 
+              file.includes(pattern) || file.startsWith('.wppconnect')
+            )
+            const isBrowserProfile = browserProfileDirs.includes(file) || 
+                                     file.startsWith('Singleton') || 
+                                     file === 'Lockfile' ||
+                                     file.startsWith('lock')
+            
+            if (isBrowserProfile && !isSessionToken) {
+              try {
+                const stat = fs.statSync(filePath)
+                if (stat.isDirectory()) {
+                  // Remove entire browser profile directory
+                  fs.rmSync(filePath, { recursive: true, force: true })
+                  console.log(`[WPPCONNECT] Removed browser profile directory: ${file}`)
+                } else {
+                  // Remove browser profile file (lock files, etc.)
+                  fs.unlinkSync(filePath)
+                  console.log(`[WPPCONNECT] Removed browser profile file: ${file}`)
+                }
+              } catch (error: any) {
+                // Ignore errors for individual files
+              }
+            } else if (isSessionToken) {
+              console.log(`[WPPCONNECT] Preserving session token: ${file}`)
+            }
+          })
+        } catch (error: any) {
+          console.warn(`[WPPCONNECT] Error cleaning profile directory:`, error.message)
+          // Fallback to lock file cleanup only
+          cleanupChromiumLockFiles(sessionProfileDir)
+        }
       } else {
         // Directory doesn't exist, create it
         fs.mkdirSync(sessionProfileDir, { recursive: true })
         console.log(`[WPPCONNECT] Created browser profile directory: ${sessionProfileDir}`)
       }
       
+      // Clean lock files one more time right before starting (in case they were recreated)
+      cleanupChromiumLockFiles(sessionProfileDir)
+      
       // Longer delay to ensure filesystem operations complete and locks are fully cleared
       // This is critical on Railway where container hostnames change between restarts
-      await new Promise(resolve => setTimeout(resolve, 800))
+      await new Promise(resolve => setTimeout(resolve, 1000))
       
       client = await create({
         session: 'wingshack-session',
@@ -229,6 +271,9 @@ async function startWhatsAppClient() {
             '--disable-session-crashed-bubble',
             '--disable-infobars',
             '--disable-breakpad',
+            '--disable-sync', // Disable sync to reduce lock file usage
+            '--disable-default-apps', // Disable default apps
+            '--disable-extensions', // Disable extensions
           ],
         },
       })
