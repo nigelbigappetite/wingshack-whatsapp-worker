@@ -67,17 +67,23 @@ function cleanupChromiumLockFiles(sessionProfileDir: string) {
     'Lockfile',
   ]
 
+  let removedCount = 0
   lockFiles.forEach((lockFile) => {
     const lockFilePath = path.join(sessionProfileDir, lockFile)
     try {
       if (fs.existsSync(lockFilePath)) {
         fs.unlinkSync(lockFilePath)
         console.log(`[WPPCONNECT] Removed stale lock file: ${lockFile}`)
+        removedCount++
+      } else {
+        console.log(`[WPPCONNECT] Lock file not found (OK): ${lockFile}`)
       }
     } catch (error: any) {
       console.warn(`[WPPCONNECT] Failed to remove lock file ${lockFile}:`, error.message)
     }
   })
+  
+  console.log(`[WPPCONNECT] Cleanup complete: removed ${removedCount} of ${lockFiles.length} lock files`)
 }
 
 // Start WPPConnect client
@@ -98,10 +104,16 @@ async function startWhatsAppClient() {
     // Session profile directory path: /app/wpp-session/wingshack-session (on Railway)
     const sessionProfileDir = path.join(sessionDir, 'wingshack-session')
     
-    // Clean up stale Chromium lock files before starting
-    if (fs.existsSync(sessionProfileDir)) {
-      cleanupChromiumLockFiles(sessionProfileDir)
+    // Ensure session profile directory exists
+    if (!fs.existsSync(sessionProfileDir)) {
+      fs.mkdirSync(sessionProfileDir, { recursive: true })
+      console.log(`[WPPCONNECT] Created session profile directory: ${sessionProfileDir}`)
     }
+    
+    // Always clean up stale Chromium lock files before starting
+    // This is critical on Railway where containers restart and lock files persist
+    console.log(`[WPPCONNECT] Cleaning up Chromium lock files in: ${sessionProfileDir}`)
+    cleanupChromiumLockFiles(sessionProfileDir)
     
     client = await create({
       session: 'wingshack-session',
