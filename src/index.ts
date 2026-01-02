@@ -523,6 +523,9 @@ function startQRCodeServer() {
   const PORT = parseInt(process.env.PORT || '3000', 10)
   const qrCodePath = path.join(process.cwd(), 'wpp-session', 'qr-code.png')
   
+  console.log(`[QR SERVER] Starting QR code server on port ${PORT}...`)
+  console.log(`[QR SERVER] QR code file path: ${qrCodePath}`)
+  
   const server = http.createServer((req, res) => {
     // CORS headers for cross-origin access
     res.setHeader('Access-Control-Allow-Origin', '*')
@@ -530,17 +533,23 @@ function startQRCodeServer() {
     
     if (req.url === '/qr-code.png' || req.url === '/qr') {
       // Serve QR code PNG file
-      if (fs.existsSync(qrCodePath)) {
-        const imageBuffer = fs.readFileSync(qrCodePath)
-        res.writeHead(200, {
-          'Content-Type': 'image/png',
-          'Content-Length': imageBuffer.length,
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-        })
-        res.end(imageBuffer)
-      } else {
-        res.writeHead(404, { 'Content-Type': 'text/plain' })
-        res.end('QR code not found. Waiting for QR code generation...')
+      try {
+        if (fs.existsSync(qrCodePath)) {
+          const imageBuffer = fs.readFileSync(qrCodePath)
+          res.writeHead(200, {
+            'Content-Type': 'image/png',
+            'Content-Length': imageBuffer.length,
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+          })
+          res.end(imageBuffer)
+        } else {
+          res.writeHead(404, { 'Content-Type': 'text/plain' })
+          res.end('QR code not found. Waiting for QR code generation...')
+        }
+      } catch (error: any) {
+        console.error(`[QR SERVER] Error reading QR code:`, error.message)
+        res.writeHead(500, { 'Content-Type': 'text/plain' })
+        res.end('Error reading QR code: ' + error.message)
       }
     } else if (req.url === '/' || req.url === '/index.html') {
       // Serve HTML page with QR code
@@ -653,10 +662,18 @@ function startQRCodeServer() {
     }
   })
   
+  server.on('error', (error: any) => {
+    console.error(`[QR SERVER] Server error:`, error.message)
+    if (error.code === 'EADDRINUSE') {
+      console.error(`[QR SERVER] Port ${PORT} is already in use`)
+    }
+  })
+  
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[QR SERVER] QR code server started on port ${PORT}`)
+    console.log(`[QR SERVER] ✓ QR code server started successfully on port ${PORT}`)
     console.log(`[QR SERVER] Access QR code at: http://localhost:${PORT}/`)
     console.log(`[QR SERVER] Direct image URL: http://localhost:${PORT}/qr-code.png`)
+    console.log(`[QR SERVER] On Railway, use your service's public URL to access the QR code`)
   })
   
   return server
@@ -670,16 +687,28 @@ async function main() {
   console.log(`Dashboard webhook: ${DASHBOARD_WEBHOOK_URL}`)
   console.log('===================================\n')
 
-  // Start QR code HTTP server (for easy scanning)
-  startQRCodeServer()
-
-  // Start WhatsApp client
-  await startWhatsAppClient()
-
-  // Start outbound polling loop
-  startOutboundLoop()
+  // Start QR code HTTP server FIRST (for easy scanning)
+  // This must start before WhatsApp client so it's always available
+  const qrServer = startQRCodeServer()
   
-  console.log('\n[SYSTEM] Worker is running. Press Ctrl+C to stop.\n')
+  // Give server a moment to start
+  await new Promise(resolve => setTimeout(resolve, 100))
+
+  // Start WhatsApp client (with error handling so server keeps running)
+  try {
+    await startWhatsAppClient()
+    
+    // Start outbound polling loop only if client started successfully
+    startOutboundLoop()
+    
+    console.log('\n[SYSTEM] Worker is running. Press Ctrl+C to stop.\n')
+  } catch (error: any) {
+    console.error('[SYSTEM] Failed to start WhatsApp client:', error.message)
+    console.error('[SYSTEM] HTTP server is still running - you can access the QR code page')
+    console.error('[SYSTEM] The WhatsApp client will retry on next restart')
+    // Don't exit - keep the HTTP server running so user can see QR code
+    // The server will show "QR code not available yet" until client starts
+  }
 
   // Handle graceful shutdown
   process.on('SIGINT', async () => {
