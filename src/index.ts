@@ -157,7 +157,25 @@ async function startWhatsAppClient() {
         catchQR: (base64Qr: string) => {
           console.log('\n=== QR CODE ===')
           console.log('Scan this QR code with WhatsApp:')
-          console.log(base64Qr)
+          
+          // Save QR code as PNG file for easy access
+          try {
+            // Extract base64 data (remove data:image/png;base64, prefix if present)
+            const base64Data = base64Qr.replace(/^data:image\/png;base64,/, '')
+            const qrCodePath = path.join(process.cwd(), 'wpp-session', 'qr-code.png')
+            const qrCodeBuffer = Buffer.from(base64Data, 'base64')
+            fs.writeFileSync(qrCodePath, qrCodeBuffer)
+            console.log(`QR code saved to: ${qrCodePath}`)
+            console.log('To access the QR code:')
+            console.log('1. Download the file from Railway (if you have file access)')
+            console.log('2. Or copy the base64 data below and decode it at https://base64.guru/converter/decode/image')
+            console.log('3. Or use: echo "' + base64Data.substring(0, 100) + '..." | base64 -d > qr-code.png')
+          } catch (saveError: any) {
+            console.warn('Failed to save QR code file:', saveError.message)
+            console.log('Base64 QR code data:')
+            console.log(base64Qr)
+          }
+          
           console.log('===============\n')
         },
         statusFind: (statusSession: string) => {
