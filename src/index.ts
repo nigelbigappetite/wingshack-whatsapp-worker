@@ -140,38 +140,38 @@ async function startWhatsAppClient() {
       cleanupChromiumLockFiles(sessionProfileDir)
       
       client = await create({
-      session: 'wingshack-session',
-      folderNameToken: 'wpp-session',
-      catchQR: (base64Qr: string) => {
-        console.log('\n=== QR CODE ===')
-        console.log('Scan this QR code with WhatsApp:')
-        console.log(base64Qr)
-        console.log('===============\n')
-      },
-      statusFind: (statusSession: string) => {
-        console.log(`[WPPCONNECT] Session status: ${statusSession}`)
-      },
-      autoClose: 0,
-      puppeteerOptions: {
-        headless: true,
-        executablePath: process.env.CHROME_BIN || undefined,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--no-zygote',
-          '--disable-background-networking',
-          '--disable-background-timer-throttling',
-          '--disable-backgrounding-occluded-windows',
-          '--disable-renderer-backgrounding',
-          '--disable-features=TranslateUI',
-          '--disable-ipc-flooding-protection',
-          '--disable-session-crashed-bubble',
-          '--disable-infobars',
-          '--disable-breakpad',
-        ],
-      },
+        session: 'wingshack-session',
+        folderNameToken: 'wpp-session',
+        catchQR: (base64Qr: string) => {
+          console.log('\n=== QR CODE ===')
+          console.log('Scan this QR code with WhatsApp:')
+          console.log(base64Qr)
+          console.log('===============\n')
+        },
+        statusFind: (statusSession: string) => {
+          console.log(`[WPPCONNECT] Session status: ${statusSession}`)
+        },
+        autoClose: 0,
+        puppeteerOptions: {
+          headless: true,
+          executablePath: process.env.CHROME_BIN || undefined,
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote',
+            '--disable-background-networking',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-features=TranslateUI',
+            '--disable-ipc-flooding-protection',
+            '--disable-session-crashed-bubble',
+            '--disable-infobars',
+            '--disable-breakpad',
+          ],
+        },
       })
 
       console.log('[WPPCONNECT] WhatsApp client started successfully')
