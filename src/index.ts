@@ -122,30 +122,18 @@ async function startWhatsAppClient() {
       // Session profile directory path: /app/wpp-session/wingshack-session (on Railway)
       const sessionProfileDir = path.join(sessionDir, 'wingshack-session')
       
-      // On Railway, completely remove and recreate the browser profile directory
-      // This ensures no stale lock files from previous container instances
-      // WPPConnect stores WhatsApp auth tokens separately, so this is safe
+      // WPPConnect stores session tokens in the session directory
+      // We must preserve these tokens to avoid re-authentication on every restart
+      // IMPORTANT: Only clean Chromium lock files, NEVER delete the entire directory
+      // Deleting the directory would remove session tokens and force re-authentication
       if (fs.existsSync(sessionProfileDir)) {
-        console.log(`[WPPCONNECT] Removing existing browser profile directory to clear stale locks: ${sessionProfileDir}`)
-        try {
-          // Remove the entire directory recursively
-          fs.rmSync(sessionProfileDir, { recursive: true, force: true })
-          console.log(`[WPPCONNECT] Successfully removed browser profile directory`)
-        } catch (rmError: any) {
-          console.warn(`[WPPCONNECT] Failed to remove profile directory, trying cleanup instead:`, rmError.message)
-          // Fallback to cleanup if removal fails
-          cleanupChromiumLockFiles(sessionProfileDir)
-        }
-      }
-      
-      // Always recreate the directory to ensure it's clean
-      if (!fs.existsSync(sessionProfileDir)) {
-        fs.mkdirSync(sessionProfileDir, { recursive: true })
-        console.log(`[WPPCONNECT] Created clean browser profile directory: ${sessionProfileDir}`)
-      } else {
-        // If directory still exists (removal failed), do aggressive cleanup
-        console.log(`[WPPCONNECT] Performing aggressive cleanup of existing profile directory`)
+        console.log(`[WPPCONNECT] Session directory exists, cleaning only Chromium lock files`)
+        console.log(`[WPPCONNECT] Preserving session tokens in: ${sessionProfileDir}`)
         cleanupChromiumLockFiles(sessionProfileDir)
+      } else {
+        // Directory doesn't exist, create it
+        fs.mkdirSync(sessionProfileDir, { recursive: true })
+        console.log(`[WPPCONNECT] Created browser profile directory: ${sessionProfileDir}`)
       }
       
       // Small delay to ensure filesystem operations complete before Chromium starts
