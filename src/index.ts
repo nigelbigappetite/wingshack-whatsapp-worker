@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js'
 import axios from 'axios'
 import * as path from 'path'
 import * as fs from 'fs'
+import * as http from 'http'
 
 // Environment variables
 const SUPABASE_URL = process.env.SUPABASE_URL
@@ -60,6 +61,7 @@ let isProcessingJob = false
 // Clean up stale Chromium lock files from session profile directory
 // This prevents "profile appears to be in use" errors on Railway
 // The SingletonLock file contains hostname info from previous containers, causing false positives
+// Lock files can be in the root or in subdirectories like Default/
 function cleanupChromiumLockFiles(sessionProfileDir: string) {
   const lockFiles = [
     'SingletonLock',
@@ -70,57 +72,62 @@ function cleanupChromiumLockFiles(sessionProfileDir: string) {
 
   let removedCount = 0
   
-  // First, try to remove known lock files
-  lockFiles.forEach((lockFile) => {
-    const lockFilePath = path.join(sessionProfileDir, lockFile)
+  // Recursive function to clean lock files in a directory and its subdirectories
+  const cleanLockFilesInDir = (dir: string, depth: number = 0) => {
+    // Limit recursion depth to avoid infinite loops
+    if (depth > 3) return
+    
     try {
-      if (fs.existsSync(lockFilePath)) {
-        // Force remove with multiple strategies
+      if (!fs.existsSync(dir)) return
+      
+      const entries = fs.readdirSync(dir)
+      
+      entries.forEach((entry) => {
+        const entryPath = path.join(dir, entry)
+        
         try {
-          // Try normal unlink first
-          fs.unlinkSync(lockFilePath)
-          console.log(`[WPPCONNECT] Removed stale lock file: ${lockFile}`)
-          removedCount++
-        } catch (unlinkError: any) {
-          // If unlink fails, try chmod then unlink (in case of permission issues)
-          try {
-            fs.chmodSync(lockFilePath, 0o666)
-            fs.unlinkSync(lockFilePath)
-            console.log(`[WPPCONNECT] Force removed lock file: ${lockFile}`)
-            removedCount++
-          } catch (forceError: any) {
-            console.warn(`[WPPCONNECT] Could not remove lock file ${lockFile}:`, forceError.message)
-          }
-        }
-      }
-    } catch (error: any) {
-      console.warn(`[WPPCONNECT] Error checking lock file ${lockFile}:`, error.message)
-    }
-  })
-  
-  // Also check for any files matching lock patterns (in case of variations)
-  try {
-    if (fs.existsSync(sessionProfileDir)) {
-      const files = fs.readdirSync(sessionProfileDir)
-      files.forEach((file) => {
-        // Remove any files that look like lock files
-        if (file.startsWith('Singleton') || file === 'Lockfile' || file.startsWith('lock')) {
-          const lockFilePath = path.join(sessionProfileDir, file)
-          try {
-            if (fs.existsSync(lockFilePath)) {
-              fs.unlinkSync(lockFilePath)
-              console.log(`[WPPCONNECT] Removed additional lock file: ${file}`)
-              removedCount++
+          const stat = fs.statSync(entryPath)
+          
+          if (stat.isDirectory()) {
+            // Recursively check subdirectories (especially Default/, Profile/, etc.)
+            cleanLockFilesInDir(entryPath, depth + 1)
+          } else {
+            // Check if this file is a lock file
+            const isLockFile = lockFiles.includes(entry) ||
+                              entry.startsWith('Singleton') ||
+                              entry === 'Lockfile' ||
+                              entry.toLowerCase().startsWith('lock')
+            
+            if (isLockFile) {
+              try {
+                // Try normal unlink first
+                fs.unlinkSync(entryPath)
+                console.log(`[WPPCONNECT] Removed lock file: ${entryPath.replace(sessionProfileDir, '...')}`)
+                removedCount++
+              } catch (unlinkError: any) {
+                // If unlink fails, try chmod then unlink (in case of permission issues)
+                try {
+                  fs.chmodSync(entryPath, 0o666)
+                  fs.unlinkSync(entryPath)
+                  console.log(`[WPPCONNECT] Force removed lock file: ${entryPath.replace(sessionProfileDir, '...')}`)
+                  removedCount++
+                } catch (forceError: any) {
+                  console.warn(`[WPPCONNECT] Could not remove lock file ${entryPath}:`, forceError.message)
+                }
+              }
             }
-          } catch (error: any) {
-            // Ignore errors for additional files
           }
+        } catch (error: any) {
+          // Ignore errors for individual entries
         }
       })
+    } catch (error: any) {
+      // Ignore errors when scanning directory
     }
-  } catch (error: any) {
-    // Ignore errors when scanning directory
   }
+  
+  // Start cleaning from the root profile directory
+  cleanLockFilesInDir(sessionProfileDir)
   
   if (removedCount > 0) {
     console.log(`[WPPCONNECT] Cleanup complete: removed ${removedCount} lock files`)
@@ -219,8 +226,12 @@ async function startWhatsAppClient() {
         session: 'wingshack-session',
         folderNameToken: 'wpp-session',
         catchQR: (base64Qr: string) => {
-          console.log('\n=== QR CODE ===')
-          console.log('Scan this QR code with WhatsApp:')
+          const PORT = parseInt(process.env.PORT || '3000', 10)
+          const qrCodeUrl = `http://localhost:${PORT}/`
+          const qrCodeImageUrl = `http://localhost:${PORT}/qr-code.png`
+          
+          console.log('\n=== QR CODE GENERATED ===')
+          console.log('📱 Scan this QR code with WhatsApp to link your device')
           
           // Extract base64 data (remove data:image/png;base64, prefix if present)
           const base64Data = base64Qr.replace(/^data:image\/png;base64,/, '')
@@ -235,18 +246,17 @@ async function startWhatsAppClient() {
             console.warn('Failed to save QR code file:', saveError.message)
           }
           
-          // Log base64 data in a clean format for easy copying
+          console.log('\n🌐 EASIEST WAY - Access via HTTP server:')
+          console.log(`   Open in browser: ${qrCodeUrl}`)
+          console.log(`   Direct image: ${qrCodeImageUrl}`)
+          console.log(`   (On Railway, use the public URL from your service settings)`)
+          console.log('\n📋 Alternative methods:')
+          console.log('1. Copy the base64 data below and decode at: https://base64.guru/converter/decode/image')
+          console.log('2. Or download from Railway: railway run cat wpp-session/qr-code.png > qr-code.png')
           console.log('\n--- Base64 QR Code Data (copy everything below this line) ---')
           console.log(base64Data)
           console.log('--- End of Base64 Data ---\n')
-          
-          console.log('To decode the QR code:')
-          console.log('1. Copy the base64 data above (between the lines)')
-          console.log('2. Go to: https://base64.guru/converter/decode/image')
-          console.log('3. Paste the base64 data and download the PNG')
-          console.log('4. Or use this command locally:')
-          console.log(`   echo "${base64Data.substring(0, 50)}..." | base64 -d > qr-code.png`)
-          console.log('5. Or download from Railway: railway run cat wpp-session/qr-code.png > qr-code.png')
+          console.log('⚠️  QR codes expire quickly - scan as soon as possible!')
           console.log('===============\n')
         },
         statusFind: (statusSession: string) => {
@@ -262,6 +272,8 @@ async function startWhatsAppClient() {
             '--disable-dev-shm-usage',
             '--disable-gpu',
             '--no-zygote',
+            '--disable-features=site-per-process',
+            `--user-data-dir=${sessionProfileDir}`,
             '--disable-background-networking',
             '--disable-background-timer-throttling',
             '--disable-backgrounding-occluded-windows',
@@ -506,6 +518,150 @@ function startOutboundLoop() {
   }, POLL_INTERVAL_MS)
 }
 
+// Start HTTP server to serve QR code for easy scanning
+function startQRCodeServer() {
+  const PORT = parseInt(process.env.PORT || '3000', 10)
+  const qrCodePath = path.join(process.cwd(), 'wpp-session', 'qr-code.png')
+  
+  const server = http.createServer((req, res) => {
+    // CORS headers for cross-origin access
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'GET')
+    
+    if (req.url === '/qr-code.png' || req.url === '/qr') {
+      // Serve QR code PNG file
+      if (fs.existsSync(qrCodePath)) {
+        const imageBuffer = fs.readFileSync(qrCodePath)
+        res.writeHead(200, {
+          'Content-Type': 'image/png',
+          'Content-Length': imageBuffer.length,
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        })
+        res.end(imageBuffer)
+      } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain' })
+        res.end('QR code not found. Waiting for QR code generation...')
+      }
+    } else if (req.url === '/' || req.url === '/index.html') {
+      // Serve HTML page with QR code
+      const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WhatsApp QR Code</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    .container {
+      background: white;
+      padding: 2rem;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      text-align: center;
+      max-width: 500px;
+    }
+    h1 {
+      color: #333;
+      margin-top: 0;
+    }
+    .qr-container {
+      margin: 2rem 0;
+      padding: 1rem;
+      background: #f5f5f5;
+      border-radius: 8px;
+    }
+    img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+    }
+    .instructions {
+      color: #666;
+      margin-top: 1rem;
+      line-height: 1.6;
+    }
+    .status {
+      margin-top: 1rem;
+      padding: 0.5rem;
+      background: #e3f2fd;
+      border-radius: 4px;
+      color: #1976d2;
+      font-size: 0.9rem;
+    }
+    .refresh-btn {
+      margin-top: 1rem;
+      padding: 0.75rem 1.5rem;
+      background: #667eea;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1rem;
+      transition: background 0.3s;
+    }
+    .refresh-btn:hover {
+      background: #5568d3;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📱 WhatsApp QR Code</h1>
+    <div class="qr-container">
+      <img id="qrImage" src="/qr-code.png" alt="WhatsApp QR Code" onerror="this.style.display='none'; document.getElementById('status').textContent='QR code not available yet. Please wait...';">
+    </div>
+    <div id="status" class="status">Scan this QR code with WhatsApp to link your device</div>
+    <div class="instructions">
+      <p><strong>Instructions:</strong></p>
+      <ol style="text-align: left; color: #666;">
+        <li>Open WhatsApp on your phone</li>
+        <li>Go to Settings → Linked Devices</li>
+        <li>Tap "Link a Device"</li>
+        <li>Scan this QR code</li>
+      </ol>
+    </div>
+    <button class="refresh-btn" onclick="location.reload()">🔄 Refresh QR Code</button>
+  </div>
+  <script>
+    // Auto-refresh QR code every 5 seconds
+    setInterval(() => {
+      const img = document.getElementById('qrImage');
+      if (img) {
+        img.src = '/qr-code.png?t=' + Date.now();
+      }
+    }, 5000);
+  </script>
+</body>
+</html>
+      `
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      res.end(html)
+    } else {
+      res.writeHead(404, { 'Content-Type': 'text/plain' })
+      res.end('Not found')
+    }
+  })
+  
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`[QR SERVER] QR code server started on port ${PORT}`)
+    console.log(`[QR SERVER] Access QR code at: http://localhost:${PORT}/`)
+    console.log(`[QR SERVER] Direct image URL: http://localhost:${PORT}/qr-code.png`)
+  })
+  
+  return server
+}
+
 // Main function
 async function main() {
   console.log('=== WhatsApp Hub Worker Starting ===')
@@ -513,6 +669,9 @@ async function main() {
   console.log(`Max attempts: ${MAX_ATTEMPTS}`)
   console.log(`Dashboard webhook: ${DASHBOARD_WEBHOOK_URL}`)
   console.log('===================================\n')
+
+  // Start QR code HTTP server (for easy scanning)
+  startQRCodeServer()
 
   // Start WhatsApp client
   await startWhatsAppClient()
