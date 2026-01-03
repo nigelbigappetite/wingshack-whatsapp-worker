@@ -344,6 +344,16 @@ async function startWhatsAppClient() {
 
       // Set up inbound message handler
     client.onMessage(async (message: any) => {
+      // Log ALL incoming messages for debugging
+      console.log(`[INBOUND] Raw message received:`, {
+        from: message.from,
+        type: message.type,
+        hasBody: !!message.body,
+        bodyPreview: message.body ? message.body.substring(0, 50) : 'N/A',
+        isGroup: message.from?.includes('@g.us'),
+        messageId: message.id?.id || message.id,
+      })
+
       try {
         // Ignore group messages (groups have @g.us suffix)
         if (message.from && message.from.includes('@g.us')) {
@@ -353,6 +363,7 @@ async function startWhatsAppClient() {
 
         // Only process text messages
         if (message.type !== 'chat' || !message.body) {
+          console.log(`[INBOUND] Skipping message - type: ${message.type}, hasBody: ${!!message.body}`)
           return
         }
 
@@ -390,6 +401,10 @@ async function startWhatsAppClient() {
           }
         } catch (error: any) {
           console.error(`[INBOUND] Error forwarding message from ${senderPhone}:`, error.message)
+          if (error.response) {
+            console.error(`[INBOUND] Webhook response status: ${error.response.status}`)
+            console.error(`[INBOUND] Webhook response data:`, error.response.data)
+          }
         }
       } catch (error: any) {
         console.error('[INBOUND] Error processing message:', error.message)
